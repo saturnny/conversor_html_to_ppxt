@@ -1,0 +1,12 @@
+HTTP/1.1 200 OK
+vary: rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch
+cache-control: no-store
+content-disposition: attachment; filename="artifact-a79dfae4-b69d-4a46-9308-08a5b2504ae8-0.pptx"
+content-type: application/vnd.openxmlformats-officedocument.presentationml.presentation
+x-conversion-warnings: []
+x-slide-count: 16
+Date: Tue, 31 Mar 2026 22:30:57 GMT
+Connection: keep-alive
+Keep-Alive: timeout=5
+Transfer-Encoding: chunked
+
