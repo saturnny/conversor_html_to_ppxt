@@ -157,6 +157,7 @@ function buildFrameBridgeScript(defaultFileName: string): string {
       const progressSelector = ".footer-progress-bar, [data-slide-progress], .progress-bar__fill";
       const fallbackFileName = ${JSON.stringify(defaultFileName)};
       const assetProxyBase = "/api/asset-proxy?url=";
+      let bundleLoadPromise = null;
 
       function waitForImage(image) {
         return new Promise((resolve) => {
@@ -182,6 +183,83 @@ function buildFrameBridgeScript(defaultFileName: string): string {
         const images = Array.from(document.images || []);
         await Promise.all(images.map(waitForImage));
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      }
+
+      function withCacheBust(source) {
+        try {
+          const url = new URL(source, window.location.href);
+          url.searchParams.set("__htmlToPptxRetry", String(Date.now()));
+          return url.toString();
+        } catch {
+          const separator = source.includes("?") ? "&" : "?";
+          return source + separator + "__htmlToPptxRetry=" + String(Date.now());
+        }
+      }
+
+      function loadScript(source) {
+        return new Promise((resolve, reject) => {
+          const script = document.createElement("script");
+          const cleanup = () => {
+            window.clearTimeout(timeoutId);
+            script.onload = null;
+            script.onerror = null;
+          };
+          const timeoutId = window.setTimeout(() => {
+            cleanup();
+            script.remove();
+            reject(new Error("Tempo esgotado ao carregar " + source));
+          }, 12000);
+
+          script.src = withCacheBust(source);
+          script.async = false;
+          script.onload = () => {
+            cleanup();
+            resolve();
+          };
+          script.onerror = () => {
+            cleanup();
+            script.remove();
+            reject(new Error("Falha ao carregar " + source));
+          };
+          document.body.appendChild(script);
+        });
+      }
+
+      async function ensureDomToPptxLoaded() {
+        if (window.domToPptx && typeof window.domToPptx.exportToPptx === "function") {
+          return;
+        }
+
+        if (!bundleLoadPromise) {
+          bundleLoadPromise = (async () => {
+            const sources = [
+              "/api/dom-to-pptx-bundle",
+              "https://cdn.jsdelivr.net/npm/dom-to-pptx@1.1.5/dist/dom-to-pptx.bundle.js"
+            ];
+
+            let lastError = null;
+
+            for (const source of sources) {
+              try {
+                await loadScript(source);
+                if (window.domToPptx && typeof window.domToPptx.exportToPptx === "function") {
+                  return;
+                }
+              } catch (error) {
+                lastError = error;
+              }
+            }
+
+            throw lastError || new Error("O bundle do dom-to-pptx nao foi carregado no sandbox de exportacao.");
+          })();
+        }
+
+        try {
+          await bundleLoadPromise;
+        } catch (error) {
+          bundleLoadPromise = null;
+          throw error;
+        }
       }
 
       function getPrimaryFontFamily(value) {
@@ -717,6 +795,7 @@ function buildFrameBridgeScript(defaultFileName: string): string {
       }
 
       async function inspect() {
+        await ensureDomToPptxLoaded();
         await waitForDocumentReady();
         const prepared = buildSlidesForExport();
         return {
@@ -726,6 +805,7 @@ function buildFrameBridgeScript(defaultFileName: string): string {
       }
 
       async function exportSlides(options) {
+        await ensureDomToPptxLoaded();
         await waitForDocumentReady();
 
         if (!window.domToPptx || typeof window.domToPptx.exportToPptx !== "function") {
