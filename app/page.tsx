@@ -15,17 +15,17 @@ export default function HomePage() {
             <div className="max-w-3xl text-center">
               <div className="inline-flex items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-4 py-2 text-sm font-medium text-blue-700">
                 <span className="h-2 w-2 rounded-full bg-blue-600" />
-                Conversão desktop-first com foco total na ação principal
+                Exportacao editavel com foco total na acao principal
               </div>
 
               <h1 className="mt-7 text-balance text-5xl font-semibold tracking-[-0.04em] text-slate-950 xl:text-[3.9rem]">
-                Converta HTML em PowerPoint editável
+                Converta HTML em PowerPoint editavel
               </h1>
 
               <p className="mx-auto mt-5 max-w-2xl text-lg leading-8 text-slate-600">
-                Faça upload do seu HTML, processe tudo em uma única etapa e baixe o arquivo
+                Faca upload do seu HTML, prepare os slides em um sandbox seguro e baixe o arquivo
                 <span className="font-medium text-slate-900"> .pptx </span>
-                com um fluxo limpo, rápido e pronto para desktop.
+                com textos, blocos e estruturas editaveis sempre que o layout permitir.
               </p>
             </div>
 
