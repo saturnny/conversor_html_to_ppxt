@@ -477,12 +477,19 @@ function triggerDownload(url: string, fileName: string) {
 }
 
 function formatExportError(error: unknown): string {
-  if (error instanceof Error) {
-    if (/cors|tainted|font|image/i.test(error.message)) {
-      return `${error.message} Verifique CORS de imagens e fontes externas usadas no HTML.`;
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "object" && error && "message" in error
+        ? String((error as { message?: unknown }).message || "")
+        : "";
+
+  if (message) {
+    if (/cors|tainted|font|image/i.test(message)) {
+      return `${message} Verifique CORS de imagens e fontes externas usadas no HTML.`;
     }
 
-    return error.message;
+    return message;
   }
 
   return "Nao foi possivel exportar o PowerPoint editavel.";

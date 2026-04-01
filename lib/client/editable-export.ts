@@ -119,6 +119,7 @@ export function prepareEditableExportDocument(
 
   sourceDocument.documentElement.setAttribute("lang", sourceDocument.documentElement.lang || "pt-BR");
   sourceDocument.body.setAttribute("data-html-to-pptx-source", sourceName);
+  ensureCrossOriginFontLinks(sourceDocument);
 
   const supportStyle = sourceDocument.createElement("style");
   supportStyle.setAttribute(HELPER_ATTRIBUTE, "support-style");
@@ -155,6 +156,7 @@ function buildFrameBridgeScript(defaultFileName: string): string {
       const indicatorSelector = ".page-indicator, .slide-counter, [data-slide-indicator], [data-page-indicator]";
       const progressSelector = ".footer-progress-bar, [data-slide-progress], .progress-bar__fill";
       const fallbackFileName = ${JSON.stringify(defaultFileName)};
+      const assetProxyBase = "/api/asset-proxy?url=";
 
       function waitForImage(image) {
         return new Promise((resolve) => {
@@ -180,6 +182,298 @@ function buildFrameBridgeScript(defaultFileName: string): string {
         const images = Array.from(document.images || []);
         await Promise.all(images.map(waitForImage));
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      }
+
+      function getPrimaryFontFamily(value) {
+        if (!value) {
+          return "";
+        }
+
+        return String(value).split(",")[0].replace(/['"]/g, "").trim();
+      }
+
+      function collectUsedFontFamilies(targets) {
+        const families = new Set();
+
+        targets.forEach((target) => {
+          const nodes = [target, ...Array.from(target.querySelectorAll("*"))];
+          nodes.forEach((node) => {
+            if (!(node instanceof HTMLElement)) {
+              return;
+            }
+
+            const family = getPrimaryFontFamily(window.getComputedStyle(node).fontFamily);
+            if (family) {
+              families.add(family);
+            }
+          });
+        });
+
+        return families;
+      }
+
+      function extractFontUrl(srcText) {
+        if (!srcText) {
+          return null;
+        }
+
+        const matches = srcText.match(/url\\((['"]?)(.*?)\\1\\)/g);
+        if (!matches) {
+          return null;
+        }
+
+        let fallbackUrl = null;
+
+        for (const match of matches) {
+          const url = match.replace(/url\\((['"]?)(.*?)\\1\\)/, "$2");
+          if (!url || url.startsWith("data:")) {
+            continue;
+          }
+
+          if (url.includes(".ttf") || url.includes(".otf") || url.includes(".woff2") || url.includes(".woff")) {
+            return url;
+          }
+
+          if (!fallbackUrl) {
+            fallbackUrl = url;
+          }
+        }
+
+        return fallbackUrl;
+      }
+
+      function collectExplicitFontDefinitions(targets) {
+        const usedFamilies = collectUsedFontFamilies(targets);
+        const collected = [];
+        const processed = new Set();
+
+        Array.from(document.styleSheets || []).forEach((sheet) => {
+          try {
+            const rules = sheet.cssRules || sheet.rules;
+            if (!rules) {
+              return;
+            }
+
+            Array.from(rules).forEach((rule) => {
+              if (!(rule instanceof CSSFontFaceRule)) {
+                return;
+              }
+
+              const family = getPrimaryFontFamily(rule.style.getPropertyValue("font-family"));
+              if (!family || !usedFamilies.has(family)) {
+                return;
+              }
+
+              const url = extractFontUrl(rule.style.getPropertyValue("src"));
+              if (!url || processed.has(url)) {
+                return;
+              }
+
+              processed.add(url);
+              collected.push({ name: family, url: url });
+            });
+          } catch {}
+        });
+
+        return collected;
+      }
+
+      function dedupeFonts(fonts) {
+        const seen = new Set();
+
+        return fonts.filter((font) => {
+          if (!font || !font.name || !font.url) {
+            return false;
+          }
+
+          const key = String(font.name).trim().toLowerCase() + "::" + String(font.url).trim();
+          if (seen.has(key)) {
+            return false;
+          }
+
+          seen.add(key);
+          return true;
+        });
+      }
+
+      function toAbsoluteUrl(value) {
+        if (!value) {
+          return null;
+        }
+
+        try {
+          return new URL(value, window.location.href).toString();
+        } catch {
+          return null;
+        }
+      }
+
+      function proxifyUrl(value) {
+        const absoluteUrl = toAbsoluteUrl(value);
+        if (!absoluteUrl) {
+          return value;
+        }
+
+        try {
+          const parsed = new URL(absoluteUrl);
+          const isHttp = parsed.protocol === "http:" || parsed.protocol === "https:";
+          if (!isHttp || parsed.origin === window.location.origin) {
+            return absoluteUrl;
+          }
+
+          return assetProxyBase + encodeURIComponent(absoluteUrl);
+        } catch {
+          return value;
+        }
+      }
+
+      function splitCssLayers(value) {
+        const input = String(value || "").trim();
+        if (!input) {
+          return [];
+        }
+
+        const result = [];
+        let current = "";
+        let depth = 0;
+        let quote = "";
+
+        for (let index = 0; index < input.length; index += 1) {
+          const character = input[index];
+
+          if (quote) {
+            current += character;
+            if (character === quote && input[index - 1] !== "\\\\") {
+              quote = "";
+            }
+            continue;
+          }
+
+          if (character === "'" || character === '"') {
+            quote = character;
+            current += character;
+            continue;
+          }
+
+          if (character === "(") {
+            depth += 1;
+            current += character;
+            continue;
+          }
+
+          if (character === ")") {
+            depth = Math.max(0, depth - 1);
+            current += character;
+            continue;
+          }
+
+          if (character === "," && depth === 0) {
+            result.push(current.trim());
+            current = "";
+            continue;
+          }
+
+          current += character;
+        }
+
+        if (current.trim()) {
+          result.push(current.trim());
+        }
+
+        return result;
+      }
+
+      function extractBackgroundUrl(layer) {
+        const match = String(layer || "").match(/url\\((['"]?)(.*?)\\1\\)/i);
+        return match?.[2] || null;
+      }
+
+      function rewriteLayerUrl(layer) {
+        const assetUrl = extractBackgroundUrl(layer);
+        if (!assetUrl) {
+          return layer;
+        }
+
+        return String(layer).replace(assetUrl, proxifyUrl(assetUrl));
+      }
+
+      function rewriteImageSources(root) {
+        const candidates = [];
+
+        if (root instanceof HTMLElement && root.matches("img[src]")) {
+          candidates.push(root);
+        }
+
+        root.querySelectorAll("img[src]").forEach((image) => {
+          if (image instanceof HTMLImageElement) {
+            candidates.push(image);
+          }
+        });
+
+        candidates.forEach((image) => {
+          const source = image.getAttribute("src");
+          if (!source) {
+            return;
+          }
+
+          const proxied = proxifyUrl(source);
+          if (proxied && proxied !== source) {
+            image.setAttribute("src", proxied);
+          }
+        });
+      }
+
+      function normalizeBackgroundAssets(root) {
+        const elements = [root, ...Array.from(root.querySelectorAll("*"))];
+
+        elements.forEach((element) => {
+          if (!(element instanceof HTMLElement)) {
+            return;
+          }
+
+          const style = window.getComputedStyle(element);
+          const layers = splitCssLayers(style.backgroundImage).filter((layer) => {
+            return layer && layer !== "none";
+          });
+
+          if (!layers.some((layer) => layer.includes("url("))) {
+            return;
+          }
+
+          const positions = splitCssLayers(style.backgroundPosition);
+          const sizes = splitCssLayers(style.backgroundSize);
+          const repeats = splitCssLayers(style.backgroundRepeat);
+
+          if (style.position === "static") {
+            element.style.setProperty("position", "relative", "important");
+          }
+
+          element.style.setProperty("isolation", "isolate", "important");
+          element.style.setProperty("background-image", "none", "important");
+
+          layers
+            .map((layer, index) => ({
+              layer,
+              index
+            }))
+            .reverse()
+            .forEach(({ layer, index }, reverseIndex) => {
+              const backgroundLayer = document.createElement("div");
+              backgroundLayer.setAttribute(helperAttribute, "background-layer");
+              backgroundLayer.style.position = "absolute";
+              backgroundLayer.style.inset = "0";
+              backgroundLayer.style.pointerEvents = "none";
+              backgroundLayer.style.zIndex = String(-(reverseIndex + 1));
+              backgroundLayer.style.borderRadius = style.borderRadius;
+              backgroundLayer.style.backgroundImage = rewriteLayerUrl(layer);
+              backgroundLayer.style.backgroundPosition = positions[index] || positions[positions.length - 1] || "center";
+              backgroundLayer.style.backgroundSize = sizes[index] || sizes[sizes.length - 1] || "auto";
+              backgroundLayer.style.backgroundRepeat = repeats[index] || repeats[repeats.length - 1] || "repeat";
+              backgroundLayer.style.backgroundColor = "transparent";
+
+              element.insertBefore(backgroundLayer, element.firstChild);
+            });
+        });
       }
 
       function filterNested(elements) {
@@ -322,6 +616,8 @@ function buildFrameBridgeScript(defaultFileName: string): string {
         clone.style.setProperty("height", String(size.height) + "px", "important");
         clone.style.setProperty("pointer-events", "none", "important");
 
+        rewriteImageSources(clone);
+        normalizeBackgroundAssets(clone);
         hideNavigation(clone);
         updateIndicators(clone, index, total);
         wrapper.appendChild(clone);
@@ -355,6 +651,8 @@ function buildFrameBridgeScript(defaultFileName: string): string {
           container.appendChild(child.cloneNode(true));
         });
 
+        rewriteImageSources(container);
+        normalizeBackgroundAssets(container);
         hideNavigation(container);
         wrapper.appendChild(container);
 
@@ -446,6 +744,9 @@ function buildFrameBridgeScript(defaultFileName: string): string {
           options || {}
         );
 
+        const inferredFonts = collectExplicitFontDefinitions(prepared.targets);
+        exportOptions.fonts = dedupeFonts([...(exportOptions.fonts || []), ...inferredFonts]);
+
         const blob = await window.domToPptx.exportToPptx(prepared.targets, exportOptions);
 
         return {
@@ -462,6 +763,16 @@ function buildFrameBridgeScript(defaultFileName: string): string {
       };
     })();
   `;
+}
+
+function ensureCrossOriginFontLinks(documentNode: Document) {
+  Array.from(documentNode.querySelectorAll('link[href*="fonts.googleapis.com"], link[href*="fonts.gstatic.com"]')).forEach(
+    (element) => {
+      if (element instanceof HTMLLinkElement && !element.crossOrigin) {
+        element.crossOrigin = "anonymous";
+      }
+    }
+  );
 }
 
 function sanitizeDocument(documentNode: Document): number {
